@@ -204,6 +204,10 @@ def main():
                 [{"role": "user", "content": raw}],
                 tokenize=False,
                 add_generation_prompt=True,
+                # Qwen3 thinking mode eats the 1024-token budget mid-reasoning and
+                # never emits <sql>...</sql>; disable it so the model answers
+                # directly (faster + valid SQL extraction).
+                enable_thinking=False,
             )
         build_prompt_fn = _chat_prompt
 
