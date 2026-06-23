@@ -1,0 +1,47 @@
+# EAR-SQL configuration
+
+model:
+  # Using the local merged SFT-init checkpoint (Qwen3-14B base + bird-direct LoRA).
+  # Both base and sft_init point to the same merged model so vLLM rollouts and
+  # the HF actor update operate on identical weights for this reproduction.
+  base: /home/dameng/ear_sql_runs/run_20260621_005814/ckpts/sft_init_merged
+  sft_init: /home/dameng/ear_sql_runs/run_20260621_005814/ckpts/sft_init_merged
+  max_prompt_len: 6144
+  max_gen_len: 1024
+
+data:
+  train: ./data/synsql_filtered.jsonl
+  eval_bird: ./data/bird/dev.json
+  db_root: ./data/bird/dev_databases
+  dialect: sqlite
+
+grpo:
+  group_size: 8
+  lr: 1.0e-6
+  kl_coef: 0.001
+  clip_eps: 0.2
+  batch_prompts: 64
+  temperature: 1.0
+  # Shortened for a single-card reproduction; increase for paper-scale convergence.
+  total_steps: 20
+
+# ---- EAR-SQL (action resampling) ----
+resample:
+  enabled: true
+  K: 2
+  budget_ratio: 0.5
+  trigger: all_wrong
+  rank_by: action_uncertainty
+  recovery_reward: binary
+  separate_advantage: true
+  mask_prefix_in_suffix_adv: true
+
+reward:
+  exec_weight: 1.0
+  syntax_weight: 0.0
+  exec_timeout_s: 30
+
+logging:
+  out_dir: ./runs/ear_sql_7b
+  eval_every: 100
+  save_every: 200

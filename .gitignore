@@ -1,0 +1,23 @@
+# Generated outputs
+runs/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Agent / local files
+.kimi/
+PLAN.md
+
+# OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

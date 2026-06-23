@@ -1,0 +1,19 @@
+# Core
+torch>=2.3
+transformers>=4.44
+datasets>=2.20
+accelerate>=0.33
+pyyaml>=6.0
+
+# RL stack — pick ONE and wire grpo_trainer.py to it
+trl>=0.9            # or: verl, or OpenRLHF
+# vllm>=0.5.4       # fast rollout generation (recommended)
+
+# SQL execution / eval
+# sqlite3 is in the Python stdlib
+func-timeout>=4.3   # guard runaway queries during reward computation
+sqlglot>=25.0       # SQL parsing / lightweight syntax validity check
+
+# Optional: BigQuery / Snowflake dialects for Spider 2.0
+# google-cloud-bigquery>=3.25
+# snowflake-connector-python>=3.12
