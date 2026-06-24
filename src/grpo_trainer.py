@@ -110,7 +110,11 @@ def _gold_rows(ex: Example):
 
 def main(cfg_path: str):
     cfg = load_cfg(cfg_path)
-    data = load_bird(cfg["data"]["eval_bird"], cfg["data"]["db_root"], cfg["data"]["dialect"])
+    # Train on cfg.data.train (a BIRD-format split). Falls back to eval_bird only
+    # if no train split is configured (skeleton default).
+    train_path = cfg["data"].get("train") or cfg["data"]["eval_bird"]
+    data = load_bird(train_path, cfg["data"]["db_root"], cfg["data"]["dialect"])
+    print(f"[train] {len(data)} examples from {train_path}")
     # Concrete backend (vLLM rollouts + HF PPO-clip). Falls back to the stub if
     # torch/vllm/transformers aren't importable (e.g. during a dry run).
     try:
@@ -124,8 +128,19 @@ def main(cfg_path: str):
     for step in range(cfg["grpo"]["total_steps"]):
         batch = data[(step * bs) % len(data):][:bs]
         stats = train_step(policy, batch, cfg)
-        if step % 10 == 0:
-            print(step, stats)
+        print(step, stats)
+
+    # Save the trained actor so a fresh vLLM server can serve it for eval
+    # (there is no online HF-actor -> vLLM weight sync).
+    out_dir = cfg["logging"].get("out_dir")
+    actor = getattr(policy, "actor", None)
+    if out_dir and actor is not None:
+        import os
+        ckpt = os.path.join(out_dir, "actor_final")
+        os.makedirs(ckpt, exist_ok=True)
+        actor.save_pretrained(ckpt)
+        policy.tok.save_pretrained(ckpt)
+        print(f"[save] trained actor -> {ckpt}")
 
 
 if __name__ == "__main__":
