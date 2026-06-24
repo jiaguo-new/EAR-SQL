@@ -21,10 +21,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import multiprocessing as mp
 import multiprocessing.pool
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -39,6 +41,23 @@ PRINT_EVERY = 50
 QUEUE_GET_TIMEOUT = 5  # seconds to wait for the worker result queue
 KILL_WAIT = 2          # seconds to wait after terminate before kill
 MAX_WORKERS = max(1, min(mp.cpu_count(), 8))
+_TIME_FLOOR = 1e-6     # clamp execution times so tiny queries don't blow up the ratio
+
+
+def _mean_exec_time(db_path: str, sql: str, timeout_s: int, runs: int) -> float | None:
+    """Average wall-clock execution time over `runs` runs; None if any run fails.
+
+    Used only for VES (efficiency) on EX-passing queries.
+    """
+    times: list[float] = []
+    for _ in range(max(1, runs)):
+        t0 = time.perf_counter()
+        res = execute(db_path, sql, timeout_s=timeout_s)
+        dt = time.perf_counter() - t0
+        if not res.ok:
+            return None
+        times.append(max(dt, _TIME_FLOOR))
+    return sum(times) / len(times)
 
 
 class _NonDaemonProcess(mp.get_context("spawn").Process):
@@ -88,10 +107,10 @@ def _normalize_sql(sql: str) -> str:
 # ---------------------------------------------------------------------------
 # Subprocess worker
 # ---------------------------------------------------------------------------
-def _worker_main(args: tuple[int, dict[str, Any], str, str, int, int],
+def _worker_main(args: tuple[int, dict[str, Any], str, str, int, int, int],
                  queue: mp.queues.Queue) -> None:
-    """Run in child process: execute gold + pred and compare."""
-    idx, item, pred_sql, db_root, limit, timeout = args
+    """Run in child process: execute gold + pred, compare, and time for VES."""
+    idx, item, pred_sql, db_root, limit, timeout, ves_runs = args
     db_id = item.get("db_id", "")
     db_path = str(Path(db_root) / db_id / f"{db_id}.sqlite")
     gold_sql = item.get("SQL") or item.get("query", "") or ""
@@ -116,12 +135,22 @@ def _worker_main(args: tuple[int, dict[str, Any], str, str, int, int],
                 _normalize_rows(gold_rows),
             )
 
+        # VES (Valid Efficiency Score): only meaningful when the result is correct.
+        # R = sqrt(t_gold / t_pred), averaged over ves_runs runs to reduce noise.
+        ves_ratio = 0.0
+        if ex and ves_runs > 0:
+            t_gold = _mean_exec_time(db_path, gold_sql, per_sql_timeout, ves_runs)
+            t_pred = _mean_exec_time(db_path, pred_sql, per_sql_timeout, ves_runs)
+            if t_gold and t_pred:
+                ves_ratio = math.sqrt(t_gold / t_pred)
+
         result: dict[str, Any] = {
             "idx": idx,
             "db_id": db_id,
             "ex": ex,
             "em": em,
             "valid": pred_res.ok,
+            "ves_ratio": ves_ratio,
             "gold_error": gold_res.error if not gold_res.ok else None,
             "pred_error": pred_res.error if not pred_res.ok else None,
             "is_join": is_join,
@@ -133,6 +162,7 @@ def _worker_main(args: tuple[int, dict[str, Any], str, str, int, int],
             "ex": False,
             "em": False,
             "valid": False,
+            "ves_ratio": 0.0,
             "gold_error": None,
             "pred_error": f"worker_crash: {exc}",
             "is_join": is_join,
@@ -142,16 +172,19 @@ def _worker_main(args: tuple[int, dict[str, Any], str, str, int, int],
     queue.put(result)
 
 
-def _evaluate_one(task: tuple[int, dict[str, Any], str, str, int, int]) -> dict[str, Any]:
+def _evaluate_one(task: tuple[int, dict[str, Any], str, str, int, int, int]) -> dict[str, Any]:
     """Spawn a single child process and enforce a hard timeout."""
     ctx = mp.get_context("spawn")
     queue = ctx.Queue(maxsize=1)
     proc = ctx.Process(target=_worker_main, args=(task, queue))
     proc.start()
 
-    # The task tuple contains the configured per-query timeout.
-    timeout = task[-1]
-    proc.join(timeout)
+    # task = (idx, item, pred_sql, db_root, limit, timeout, ves_runs).
+    # Allow extra wall-time for the VES timing runs (gold+pred, ves_runs each).
+    timeout = task[5]
+    ves_runs = task[6]
+    join_timeout = timeout + max(0, ves_runs) * timeout
+    proc.join(join_timeout)
 
     if proc.is_alive():
         proc.terminate()
@@ -165,6 +198,7 @@ def _evaluate_one(task: tuple[int, dict[str, Any], str, str, int, int]) -> dict[
             "ex": False,
             "em": False,
             "valid": False,
+            "ves_ratio": 0.0,
             "gold_error": None,
             "pred_error": "eval_timeout",
             "is_join": bool(
@@ -186,6 +220,7 @@ def _evaluate_one(task: tuple[int, dict[str, Any], str, str, int, int]) -> dict[
             "ex": False,
             "em": False,
             "valid": False,
+            "ves_ratio": 0.0,
             "gold_error": None,
             "pred_error": "eval_no_result",
             "is_join": bool(
@@ -245,6 +280,7 @@ def evaluate(
     output: str,
     timeout: int,
     limit: int,
+    ves_runs: int = 5,
 ) -> dict[str, Any]:
     preds = _load_predictions(pred_path)
     gold = _load_gold(gold_path)
@@ -274,7 +310,8 @@ def evaluate(
         raise ValueError("No overlapping examples found between pred and gold.")
 
     tasks = [
-        (i, gold[i], preds[i], db_root, limit, timeout) for i in common_indices
+        (i, gold[i], preds[i], db_root, limit, timeout, ves_runs)
+        for i in common_indices
     ]
 
     ctx = mp.get_context("spawn")
@@ -289,8 +326,11 @@ def evaluate(
             pool.apply_async(_evaluate_one, (task,)) for task in tasks
         ]
         for i, async_res in enumerate(async_results):
-            # _evaluate_one already enforces the hard per-query timeout.
-            res = async_res.get(timeout=timeout + QUEUE_GET_TIMEOUT + 5)
+            # _evaluate_one already enforces the hard per-query timeout; allow
+            # headroom for the VES timing runs it performs on EX-passing queries.
+            res = async_res.get(
+                timeout=timeout * (1 + max(0, ves_runs)) + QUEUE_GET_TIMEOUT + 5
+            )
             if res.get("worker_error"):
                 logger.warning(
                     "Worker error for idx %s: %s", res["idx"], res["worker_error"]
@@ -317,6 +357,15 @@ def evaluate(
 
     join_ex_rate = 100 * join_ex / len(join_results) if join_results else 0.0
 
+    # VES (Valid Efficiency Score): mean over ALL examples of the efficiency ratio
+    # (which is 0 for incorrect queries), scaled to 0-100. On the EX-passing subset
+    # it reflects how pred runtime compares to gold runtime.
+    ves = 100 * sum(r.get("ves_ratio", 0.0) for r in results) / n
+    ves_on_correct = (
+        100 * sum(r.get("ves_ratio", 0.0) for r in results if r["ex"]) / ex_count
+        if ex_count else 0.0
+    )
+
     summary = {
         "total": n,
         "em": em_count,
@@ -325,6 +374,9 @@ def evaluate(
         "em_rate": 100 * em_count / n,
         "ex_rate": 100 * ex_count / n,
         "valid_rate": 100 * valid_count / n,
+        "ves": ves,
+        "ves_on_correct": ves_on_correct,
+        "ves_runs": ves_runs,
         "join_total": len(join_results),
         "join_ex": join_ex,
         "join_ex_rate": join_ex_rate,
@@ -335,6 +387,7 @@ def evaluate(
     print(f"Exact Match (EM): {em_count} / {n} = {summary['em_rate']:.2f}%")
     print(f"Execution Match (EX): {ex_count} / {n} = {summary['ex_rate']:.2f}%")
     print(f"Valid SQL Rate: {valid_count} / {n} = {summary['valid_rate']:.2f}%")
+    print(f"VES (over all {n}): {ves:.2f}  |  VES on EX-correct: {ves_on_correct:.2f}  (runs={ves_runs})")
     if join_results:
         print(f"JOIN EX: {join_ex} / {len(join_results)} = {join_ex_rate:.2f}%")
     else:
@@ -367,6 +420,8 @@ def main():
     parser.add_argument("--output", default="reports/eval_bird.json", help="Path to write JSON report.")
     parser.add_argument("--timeout", type=int, default=15, help="Seconds per SQL execution.")
     parser.add_argument("--limit", type=int, default=5000, help="Max rows to fetch per query.")
+    parser.add_argument("--ves-runs", type=int, default=5,
+                        help="Timing runs per query for VES (0 disables VES).")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -374,7 +429,8 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    evaluate(args.pred, args.gold, args.db_root, args.output, args.timeout, args.limit)
+    evaluate(args.pred, args.gold, args.db_root, args.output, args.timeout,
+             args.limit, args.ves_runs)
 
 
 if __name__ == "__main__":
