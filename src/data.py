@@ -47,10 +47,12 @@ def iter_jsonl(path: str) -> Iterator[dict]:
                 yield json.loads(line)
 
 
-def m_schema(db_path: str, max_values: int = 3) -> str:
+def m_schema(db_path: str, max_values: int = 1) -> str:
     """Serialize a SQLite schema in an M-Schema-like format.
 
     (DB -> tables -> columns) with type, PK flag, and example values.
+    `max_values=1`: a single example value per column keeps the prompt bounded
+    (some BIRD DBs with long text columns blow past 8k tokens at max_values=3).
     Replace the value sampling with your own schema-linking output to feed only
     the *linked* subset for large schemas (Spider 2.0).
     """
