@@ -186,35 +186,46 @@ class Policy:
         if self.actor is None or self.opt is None:
             return {"loss": 0.0, "updated_spans": 0}
 
-        self.opt.zero_grad()
-        loss = torch.tensor(0.0, device=self.device)
-        n = 0
+        # Collect every (text, advantage, old_logprobs) span first so we can
+        # micro-batch the backward pass. Accumulating one giant autograd graph
+        # over all rollouts spikes activation memory by n_spans and OOMs/freezes
+        # the GB10's unified memory; instead we backward each span separately
+        # (gradients accumulate in .grad) so peak activation = a single span.
+        spans: list[tuple[str, float, list[float] | None]] = []
 
-        # 1) standard GRPO update on non-all-wrong groups using the original rollouts
+        # 1) standard GRPO on non-all-wrong groups (original rollouts)
         for prompt_id, advs in advantages.base.items():
             if prompt_id < 0 or prompt_id >= len(self._last_groups):
                 continue
             rollouts = self._last_groups[prompt_id]
             for r, a in zip(rollouts, advs):
-                loss = loss + self._clip_loss(r.text, a, r.action_token_logprobs)
-                n += 1
+                spans.append((r.text, a, r.action_token_logprobs))
 
         # 2) resampled suffixes: per-prefix advantage on the suffix tokens
         for rr, advs in advantages.suffix:
             for cand, a in zip(rr.resampled, advs):
-                loss = loss + self._clip_loss(cand.text, a, cand.action_token_logprobs)
-                n += 1
+                spans.append((cand.text, a, cand.action_token_logprobs))
 
         # 3) source prefixes: recovery-reward advantage on the prefix tokens
         for rr, a in advantages.prefix:
-            loss = loss + self._clip_loss(rr.prefix_text, a)
-            n += 1
+            spans.append((rr.prefix_text, a, None))
+
+        # Drop empty generations (vLLM can return ""); tokenizing them yields a
+        # 0-length sequence that crashes the actor forward.
+        spans = [s for s in spans if s[0] and s[0].strip()]
+
+        n = len(spans)
+        self.opt.zero_grad()
+        total_loss = 0.0
+        for text, a, old_lp in spans:
+            span_loss = self._clip_loss(text, a, old_lp) / n
+            span_loss.backward()
+            total_loss += float(span_loss.detach())
 
         if n:
-            (loss / n).backward()
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
             self.opt.step()
 
         # clear the rollout cache so the next training step starts fresh
         self._last_groups.clear()
-        return {"loss": float(loss.detach()) / max(n, 1), "updated_spans": n}
+        return {"loss": total_loss, "updated_spans": n}
