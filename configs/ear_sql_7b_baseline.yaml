@@ -1,0 +1,35 @@
+model:
+  base: /home/dameng/.cache/modelscope/hub/models/Qwen/Qwen2.5-7B-Instruct
+  sft_init: /home/dameng/.cache/modelscope/hub/models/Qwen/Qwen2.5-7B-Instruct
+  max_prompt_len: 6144
+  max_gen_len: 512
+data:
+  train: /home/dameng/bird_dev/dev_train180.json
+  eval_bird: /home/dameng/bird_dev/dev_heldout60.json
+  db_root: /home/dameng/bird_dev/dev_databases
+  dialect: sqlite
+grpo:
+  group_size: 4
+  lr: 1.0e-5
+  kl_coef: 0.001
+  clip_eps: 0.2
+  batch_prompts: 4
+  temperature: 1.0
+  total_steps: 16
+resample:
+  enabled: false
+  K: 2
+  budget_ratio: 0.5
+  trigger: all_wrong
+  rank_by: action_uncertainty
+  recovery_reward: binary
+  separate_advantage: true
+  mask_prefix_in_suffix_adv: true
+reward:
+  exec_weight: 1.0
+  syntax_weight: 0.0
+  exec_timeout_s: 30
+logging:
+  out_dir: /home/dameng/ear_sql_runs/run_20260623_100149/runs/train_baseline_7b
+  eval_every: 100
+  save_every: 200
