@@ -26,14 +26,26 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .resampling import Rollout, AdvantageBundle
 
 SQL_RE = re.compile(r"<sql>(.*?)</sql>", re.S)
+SQL_FENCE_RE = re.compile(r"```sql\s*(.*?)```", re.S | re.I)
+SQL_STMT_RE = re.compile(r"((?:WITH|SELECT)\b.*?)(?:;|\Z)", re.S | re.I)
 
 
 def _extract_sql(text: str) -> str:
+    # <sql> tag -> ```sql fence -> last SELECT/WITH statement -> last line.
+    # (Models often skip the <sql> tag; falling back to the last line grabs
+    # trailing prose like "This query counts ...".)
+    if not text or not text.strip():
+        return ""
     m = SQL_RE.search(text)
     if m:
         return m.group(1).strip()
-    # fallback: last ```sql block or trailing line
-    return text.strip().splitlines()[-1] if text.strip() else ""
+    m = SQL_FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    stmts = SQL_STMT_RE.findall(text)
+    if stmts:
+        return stmts[-1].strip().rstrip(";").strip()
+    return text.strip().splitlines()[-1]
 
 
 def _is_lora(path: str | None) -> bool:

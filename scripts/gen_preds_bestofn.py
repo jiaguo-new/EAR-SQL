@@ -31,13 +31,30 @@ from src.sql_exec import execute
 from transformers import AutoTokenizer
 
 SQL_RE = re.compile(r"<sql>(.*?)</sql>", re.S)
+SQL_FENCE_RE = re.compile(r"```sql\s*(.*?)```", re.S | re.I)
+SQL_STMT_RE = re.compile(r"((?:WITH|SELECT)\b.*?)(?:;|\Z)", re.S | re.I)
 
 
 def extract_sql(text: str) -> str:
+    """Robustly pull the SQL out of a model completion.
+
+    Models (esp. Qwen2.5) don't always honor <sql>...</sql>; if we only check the
+    tag and then fall back to the *last line*, we grab trailing prose like
+    "This query counts ...". So: <sql> tag -> ```sql fence -> last SELECT/WITH
+    statement -> last line.
+    """
+    if not text or not text.strip():
+        return ""
     m = SQL_RE.search(text)
     if m:
         return m.group(1).strip()
-    return text.strip().splitlines()[-1] if text.strip() else ""
+    m = SQL_FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    stmts = SQL_STMT_RE.findall(text)
+    if stmts:
+        return stmts[-1].strip().rstrip(";").strip()
+    return text.strip().splitlines()[-1]
 
 
 def vllm_generate(url: str, model: str, prompt: str, n: int, max_tokens: int,
