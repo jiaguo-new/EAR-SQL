@@ -125,10 +125,15 @@ def main(cfg_path: str):
               "Install torch/transformers/requests + start a vLLM server.")
         policy = Policy()
     bs = cfg["grpo"]["batch_prompts"]
+    sync_every = int(cfg["grpo"].get("sync_every", 0) or 0)
     for step in range(cfg["grpo"]["total_steps"]):
         batch = data[(step * bs) % len(data):][:bs]
         stats = train_step(policy, batch, cfg)
-        print(step, stats)
+        print(step, stats, flush=True)
+        # on-policy: periodically push updated actor weights into the rollout vLLM
+        if sync_every and step > 0 and step % sync_every == 0 and step < cfg["grpo"]["total_steps"] - 1:
+            ok = policy.sync_to_vllm() if hasattr(policy, "sync_to_vllm") else False
+            print(f"[sync] step {step} actor->vLLM: {'ok' if ok else 'skip/fail'}", flush=True)
 
     # Save the trained actor so a fresh vLLM server can serve it for eval
     # (there is no online HF-actor -> vLLM weight sync).

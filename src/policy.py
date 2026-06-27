@@ -16,6 +16,7 @@ Run a rollout server first, e.g.:
 from __future__ import annotations
 import os
 import re
+import subprocess
 from typing import List
 
 import requests
@@ -241,3 +242,31 @@ class Policy:
         # clear the rollout cache so the next training step starts fresh
         self._last_groups.clear()
         return {"loss": total_loss, "updated_spans": n}
+
+    # ---- on-policy weight sync: push actor weights into the rollout vLLM ----
+    def sync_to_vllm(self) -> bool:
+        """Save the actor and restart the local rollout vLLM with it.
+
+        Makes subsequent rollouts come from the *current* policy (true on-policy
+        GRPO). The skeleton talks to vLLM over HTTP with no shared NCCL group, so
+        save+restart is the simplest robust sync. Returns True on success.
+        """
+        if self.actor is None:
+            return False
+        sync_dir = os.environ.get(
+            "EAR_SYNC_DIR",
+            os.path.join(self.cfg.get("logging", {}).get("out_dir", "."), "rollout_sync"),
+        )
+        os.makedirs(sync_dir, exist_ok=True)
+        self.actor.save_pretrained(sync_dir)
+        self.tok.save_pretrained(sync_dir)
+        script = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "scripts", "restart_rollout_vllm.sh")
+        util = os.environ.get("EAR_ROLLOUT_UTIL", "0.15")
+        port = self.vllm_url.split(":")[2].split("/")[0]
+        r = subprocess.run(["bash", script, sync_dir, self.model_name, util, port],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[sync] vLLM restart failed: {r.stderr[-300:]}")
+            return False
+        return True
