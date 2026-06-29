@@ -1,5 +1,10 @@
 # On-policy RL 训练对照（7B）：EAR-SQL 首次跑出正收益
 
+> ⚠️ **更新（2026-06-28）：本轮 EAR>baseline 的结论未在 Qwen2.5-Coder-7B 上复现**
+> （Coder 上 baseline 36.67% > EAR 33.33%，方向相反）。在 60 条单 seed 下 ±5pp 属噪声，
+> 且训练有 NaN 不稳定混杂。**当前 EAR vs baseline 尚无可靠结论**，详见
+> `train_coder_onpolicy.md`。本文结果请据此谨慎看待。
+
 > 运行：`run_20260623_100149` ｜ 日期：2026-06-27 ｜ 分支：`claude/infallible-chatelet-127c1e`
 > 模型：Qwen2.5-7B-Instruct（全量微调）｜ 机器：NVIDIA GB10（单卡，119GB 统一内存）
 

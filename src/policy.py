@@ -230,18 +230,33 @@ class Policy:
         n = len(spans)
         self.opt.zero_grad()
         total_loss = 0.0
+        applied = 0
         for text, a, old_lp in spans:
-            span_loss = self._clip_loss(text, a, old_lp) / n
+            span_loss = self._clip_loss(text, a, old_lp) / max(n, 1)
+            # Skip non-finite losses: an occasional rollout produces a huge/NaN
+            # importance ratio (esp. on-policy after a weight sync) that would
+            # poison the accumulated gradient and NaN out the whole actor.
+            if not torch.isfinite(span_loss):
+                continue
             span_loss.backward()
             total_loss += float(span_loss.detach())
+            applied += 1
 
-        if n:
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-            self.opt.step()
+        if applied:
+            # guard again in case grads went non-finite, then clip + step
+            finite = all(
+                p.grad is None or torch.isfinite(p.grad).all()
+                for p in self.actor.parameters()
+            )
+            if finite:
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+                self.opt.step()
+            else:
+                self.opt.zero_grad()
 
         # clear the rollout cache so the next training step starts fresh
         self._last_groups.clear()
-        return {"loss": total_loss, "updated_spans": n}
+        return {"loss": total_loss, "updated_spans": applied, "skipped_spans": n - applied}
 
     # ---- on-policy weight sync: push actor weights into the rollout vLLM ----
     def sync_to_vllm(self) -> bool:
