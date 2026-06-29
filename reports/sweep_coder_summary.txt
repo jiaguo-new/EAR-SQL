@@ -1,0 +1,16 @@
+=== Multi-seed sweep: EAR vs baseline (Qwen2.5-Coder-7B, heldout300) ===
+
+original (untrained): EX 38.00%  VES 40.00
+  by difficulty: {'moderate': 29.1, 'simple': 43.3, 'challenging': 25.9}
+
+baseline-trained  (n=3 seeds): EX 40.00±0.58%  VES 40.92±1.12
+  EX by difficulty: {'moderate': '32.9±1.3', 'simple': '44.8±1.0', 'challenging': '25.9±0.0'}
+  per-seed EX: [39.67, 39.67, 40.67]
+
+ear-trained  (n=3 seeds): EX 39.78±1.90%  VES 41.44±1.75
+  EX by difficulty: {'moderate': '30.0±1.9', 'simple': '45.7±2.1', 'challenging': '25.9±0.0'}
+  per-seed EX: [40.33, 41.33, 37.67]
+
+VERDICT: EAR 39.78% vs baseline 40.00%  (delta -0.22pp)
+  std baseline 0.58, ear 1.90; |delta|/pooled_std = 0.16
+  (rule of thumb: needs >~2 to claim a real effect at n=3)
