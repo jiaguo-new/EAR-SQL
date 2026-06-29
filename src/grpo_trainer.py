@@ -136,8 +136,10 @@ def main(cfg_path: str):
             print(f"[sync] step {step} actor->vLLM: {'ok' if ok else 'skip/fail'}", flush=True)
 
     # Save the trained actor so a fresh vLLM server can serve it for eval
-    # (there is no online HF-actor -> vLLM weight sync).
-    out_dir = cfg["logging"].get("out_dir")
+    # (there is no online HF-actor -> vLLM weight sync). EAR_OUT_DIR lets a sweep
+    # reuse one config across seeds with distinct output dirs.
+    import os
+    out_dir = os.environ.get("EAR_OUT_DIR") or cfg["logging"].get("out_dir")
     actor = getattr(policy, "actor", None)
     if out_dir and actor is not None:
         import os
